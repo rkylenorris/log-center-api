@@ -55,7 +55,12 @@ class AbstractAPIKey(Base):
     key_owner_email = Column(String, ForeignKey("key_holders.email"))
     deactivated_at = Column(DateTime, nullable=True)
     active = Column(Boolean, default=True)
-    key_type = Column(SQLAEnum(KeyType), default=KeyType.USER)
+    type = Column(SQLAEnum(KeyType), default=KeyType.USER)
+    
+    __mapper_args__ = {
+        'polymorphic_on': type,
+        'polymorphic_identity': 'base'
+    }
     
     def deactivate_key(self):
         self.active = False
@@ -64,12 +69,20 @@ class AbstractAPIKey(Base):
 
 class UserAPIKey(AbstractAPIKey):
     __tablename__ = "user_api_keys"
+    __mapper_args__ = {
+        'polymorphic_identity': 'USER'
+    }
+
 
 
 class ProcessAPIKey(AbstractAPIKey):
     __tablename__ = "process_api_keys"
     process_name = Column(String, index=True)
     environment = Column(SQLAEnum(Environment), default=Environment.DEVELOPMENT, index=True)
+
+    __mapper_args__ = {
+        'polymorphic_identity': 'PROCESS'
+    }
 
 
 class LogEntry(Base):
