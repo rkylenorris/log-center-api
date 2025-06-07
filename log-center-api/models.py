@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, DateTime, create_engine, Boolean, ForeignKey
+from sqlalchemy import Enum as SQLAEnum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
@@ -26,6 +27,18 @@ def get_db():
         yield db
     finally:
         db.close()
+        
+        
+class KeyType(str, Enum):
+    USER = "USER"
+    PROCESS = "PROCESS"
+
+
+class Environment(str, Enum):
+    DEVELOPMENT = "DEVELOPMENT"
+    PRODUCTION = "PRODUCTION"
+    TESTING = "TESTING"
+    
 
 class LogLevel(str, Enum):
     DEBUG = "DEBUG"
@@ -34,36 +47,54 @@ class LogLevel(str, Enum):
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
 
-class APIKey(Base):
-    __tablename__ = "api_keys"
+
+class AbstractAPIKey(Base):
+    __abstract__ = True
     key = Column(String, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.now)
-    owner_email = Column(String, ForeignKey("key_holders.email"))
+    key_owner_email = Column(String, ForeignKey("key_holders.email"))
     deactivated_at = Column(DateTime, nullable=True)
     active = Column(Boolean, default=True)
+    key_type = Column(SQLAEnum(KeyType), default=KeyType.USER)
     
     def deactivate_key(self):
         self.active = False
         self.deactivated_at = datetime.now()
 
+
+class UserAPIKey(AbstractAPIKey):
+    __tablename__ = "user_api_keys"
+
+
+class ProcessAPIKey(AbstractAPIKey):
+    __tablename__ = "process_api_keys"
+    process_name = Column(String, index=True)
+    environment = Column(SQLAEnum(Environment), default=Environment.DEVELOPMENT, index=True)
+
+
 class LogEntry(Base):
     __tablename__ = "logs"
     id = Column(String, primary_key=True, index=True)
-    level = Column(String, index=True)
+    level = Column(SQLAEnum(LogLevel), index=True)
     message = Column(String)
     process_name = Column(String, index=True)
     timestamp = Column(DateTime, default=datetime.now)
+    module = Column(String, nullable=True)
+    function = Column(String, nullable=True)
+    line_number = Column(String, nullable=True)
     
+
 class KeyHolder(Base):
     __tablename__ = "key_holders"
     email = Column(String, primary_key=True, index=True)
-    name = Column(String, nullable=True)
-    keys = relationship("APIKey", back_populates="api_key")
+    name = Column(String)
+    user_keys = relationship("UserAPIKey", backref="key_holder", cascade="all, delete-orphan")
+    process_keys = relationship("ProcessAPIKey", backref="key_holder", cascade="all, delete-orphan")
     created_at = Column(DateTime, default=datetime.now)
     active = Column(Boolean, default=True)
     deactivated_at = Column(DateTime, nullable=True)
     
-    def __init__(self, email: str, name: str = None):
+    def __init__(self, email: str, name: str):
         self.email = email
         self.name = name
         self.created_at = datetime.now()
@@ -73,3 +104,8 @@ class KeyHolder(Base):
     def deactivate_user(self):
         self.active = False
         self.deactivated_at = datetime.now()
+    
+    @property
+    def all_keys(self):
+        return self.user_keys + self.process_keys
+
