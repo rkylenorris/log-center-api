@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from .models import LogEntry, APIKey, get_db, LogLevel, KeyHolder
+from .models import LogEntry, AbstractAPIKey, get_db, LogLevel, KeyHolder, KeyType
 
 router = APIRouter()
 
@@ -18,6 +18,7 @@ class LogEntryCreate(BaseModel):
 
 class APIKeyCreate(BaseModel):
     owner_email: EmailStr
+    key_type: KeyType = KeyType.USER
 
 class APIKeyResponse(BaseModel):
     key: str
@@ -27,14 +28,15 @@ class APIKeyResponse(BaseModel):
 
 class KeyHolderCreate(BaseModel):
     email: EmailStr
-    name: Optional[str] = None
+    name: str
 
-
-def verify_api_key(x_api_key: Optional[str] = Header(None), db: Session = Depends(get_db)):
-    if not x_api_key or not db.query(APIKey).filter(APIKey.key == x_api_key, APIKey.active == True).first():
+# Dependency to verify API key
+def verify_api_key(log_center_api_key: Optional[str] = Header(None, alias="log-center-api-key"), db: Session = Depends(get_db)):
+    if not log_center_api_key or not db.query(AbstractAPIKey).filter(AbstractAPIKey.key == log_center_api_key, AbstractAPIKey.active == True).first():
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+# TODO: Update routes to reflect new models
 @router.post("/users/approve")
 def approve_user(
     user: KeyHolderCreate,
@@ -226,10 +228,10 @@ def get_logs_by_process_and_level(process_name: str, level: str, db: Session = D
     return filtered_logs
 
 @router.get("/logs/filter/messages/{keyword}", response_model=List[LogEntryCreate])
-def get_logs_by_process_and_msg_keyword(keyword: str, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
+def get_logs_by_msg_keyword(keyword: str, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
     filtered_logs = db.query(LogEntry).filter(LogEntry.message.contains(keyword)).all()
     if not filtered_logs:
-        raise HTTPException(status_code=404, detail="No logs found for this process name and keyword")
+        raise HTTPException(status_code=404, detail="No logs found for this search keyword")
     return filtered_logs
 
 @router.get("/logs/filter/{process_name}/messages/{keyword}", response_model=List[LogEntryCreate])
