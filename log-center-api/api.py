@@ -6,47 +6,65 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from .models import LogEntry, AbstractAPIKey, get_db, LogLevel, KeyHolder, KeyType
+from .models import LogEntry, AbstractAPIKey, get_db, LogLevel, KeyHolder, KeyType, UserAPIKey, ProcessAPIKey, Environment, AdminApiKey, AdminKeyHolder
 
 router = APIRouter()
+
+# TODO: Add with_polymorphic for abstract api key and its subclasses to ensure correct serialization
 
 class LogEntryCreate(BaseModel):
     level: LogLevel
     message: str
     process_name: str
     timestamp: datetime = datetime.now()
+    module: Optional[str] = None
+    function: Optional[str] = None
+    line_number: Optional[str] = None
 
 class APIKeyCreate(BaseModel):
     owner_email: EmailStr
     key_type: KeyType = KeyType.USER
-
+    environment: Environment
+    process_name: str
+    
+# TODO": Update APIKeyResponse to include more details, add other response models, and update returns to use these models
 class APIKeyResponse(BaseModel):
     key: str
     owner_email: EmailStr
     created_at: datetime
     deactivated_at: Optional[datetime] = None
+    
 
 class KeyHolderCreate(BaseModel):
     email: EmailStr
     name: str
+    
+class AdminKeyHolderCreate(BaseModel):
+    email: EmailStr
+    name: str
 
-# Dependency to verify API key
+
+# Dependency to verify admin API key
+def verify_admin_key(log_center_admin_api_key: Optional[str] = Header(None, alias="log-center-admin-api-key"), db: Session = Depends(get_db)):
+    if not log_center_admin_api_key or not db.query(AdminApiKey).filter(AdminApiKey.key == log_center_admin_api_key, AdminApiKey.active == True).first():
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+
+# Dependency to verify API key for user and process API keys
 def verify_api_key(log_center_api_key: Optional[str] = Header(None, alias="log-center-api-key"), db: Session = Depends(get_db)):
     if not log_center_api_key or not db.query(AbstractAPIKey).filter(AbstractAPIKey.key == log_center_api_key, AbstractAPIKey.active == True).first():
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-# TODO: Update routes to reflect new models
+# TODO: Add routes for creating, deactivating, and listing admin API keys, as well as creating and deactivating admin key holders
+
 @router.post("/users/approve")
 def approve_user(
     user: KeyHolderCreate,
     request: Request,
-    x_admin_api_key: Optional[str] = Header(None),
+    log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-    
     key_holder = KeyHolder(email=user.email, name=user.name)
     db.add(key_holder)
     db.commit()
@@ -57,17 +75,14 @@ def approve_user(
 def deactivate_user(
     user: KeyHolderCreate,
     request: Request,
-    x_admin_api_key: Optional[str] = Header(None),
+    log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-    
     approved_user = db.query(KeyHolder).filter(KeyHolder.email == user.email).first()
     if not approved_user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    users_keys = db.query(APIKey).filter(APIKey.owner_email == user.email, APIKey.active == True).all()
+    users_keys = approved_user.all_keys
     
     if users_keys:
         for api_key in users_keys:
@@ -84,23 +99,26 @@ def deactivate_user(
 def create_api_key(
     request: Request,
     api_key_data: APIKeyCreate,
-    x_admin_api_key: Optional[str] = Header(None),
+    log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
-):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-    
+):    
     approved = db.query(KeyHolder).filter(KeyHolder.email == api_key_data.owner_email, KeyHolder.active == True).first()
     if not approved:
         raise HTTPException(status_code=403, detail="Email is not approved to receive an API key")
 
-    new_key = secrets.token_hex(32)
-    api_key = APIKey(
-        key=new_key,
-        created_at=datetime.now(),
-        owner_email=api_key_data.owner_email,
-        deactivated_at=None
-    )
+    if api_key_data.key_type == KeyType.USER:
+        api_key = UserAPIKey(
+            key_owner_email=api_key_data.owner_email,
+            type=KeyType.USER
+        )
+    elif api_key_data.key_type == KeyType.PROCESS:
+        api_key = ProcessAPIKey(
+            key_owner_email=api_key_data.owner_email,
+            type=KeyType.PROCESS,
+            process_name=api_key_data.process_name,
+            environment=api_key_data.environment 
+        )
+        
     db.add(api_key)
     db.commit()
     db.refresh(api_key)
@@ -111,13 +129,10 @@ def create_api_key(
 def deactivate_api_key(
     key: str,
     request: Request,
-    x_admin_api_key: Optional[str] = Header(None),
+    log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-
-    api_key = db.query(APIKey).filter(APIKey.key == key).first()
+    api_key = db.query(AbstractAPIKey).filter(AbstractAPIKey.key == key).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
 
@@ -128,17 +143,14 @@ def deactivate_api_key(
     return api_key
 
 
-@router.post("/keys/deactivate/{owner_email}", response_model=APIKeyResponse)
+@router.post("/keys/deactivate-by-owner/{owner_email}", response_model=APIKeyResponse)
 def deactivate_api_key_by_owner(
     owner_email: EmailStr,
     request: Request,
-    x_admin_api_key: Optional[str] = Header(None),
+    log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-
-    api_keys = db.query(APIKey).filter(APIKey.owner_email == owner_email, APIKey.deactivated_at == None).all()
+    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.owner_email == owner_email, AbstractAPIKey.deactivated_at == None).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found for this owner")
 
@@ -154,12 +166,9 @@ def get_active_api_keys_by_owner(
     owner_email: EmailStr,
     request: Request,
     db: Session = Depends(get_db),
-    x_admin_api_key: Optional[str] = Header(None)
-):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
-    
-    api_keys = db.query(APIKey).filter(APIKey.owner_email == owner_email, APIKey.active == True).all()
+    log_center_admin_api_key = Depends(verify_admin_key)
+):    
+    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.owner_email == owner_email, AbstractAPIKey.active == True).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found for this owner")
     return api_keys
@@ -169,12 +178,10 @@ def get_active_api_keys_by_owner(
 def get_active_api_keys(
     request: Request,
     db: Session = Depends(get_db),
-    x_admin_api_key: Optional[str] = Header(None)
+    log_center_admin_api_key = Depends(verify_admin_key)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
     
-    api_keys = db.query(APIKey).filter(APIKey.active == True).all()
+    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.active == True).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found")
     return api_keys
@@ -183,12 +190,10 @@ def get_active_api_keys(
 def get_deactivated_api_keys(
     request: Request,
     db: Session = Depends(get_db),
-    x_admin_api_key: Optional[str] = Header(None)
+    log_center_admin_api_key = Depends(verify_admin_key)
 ):
-    if x_admin_api_key != request.app.state.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid admin key")
     
-    api_keys = db.query(APIKey).filter(APIKey.active == False).all()
+    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.active == False).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No deactivated API keys found")
     return api_keys
@@ -196,7 +201,7 @@ def get_deactivated_api_keys(
 
 @router.post("/logs/")
 def post_log(entry: LogEntryCreate, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
-    log = LogEntry(level=entry.level, message=entry.message, process_name=entry.process_name, timestamp=entry.timestamp)
+    log = LogEntry(**entry.dict())
     db.add(log)
     db.commit()
     db.refresh(log)
