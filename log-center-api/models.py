@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, DateTime, create_engine, Boolean, ForeignKey
 from sqlalchemy import Enum as SQLAEnum
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.orm import sessionmaker, Session, relationship, with_polymorphic
 from datetime import datetime
 from enum import Enum
 from dotenv import load_dotenv
@@ -134,8 +134,6 @@ class UserAPIKey(AbstractAPIKey):
         super().__init__(key_owner_email, type)
         
 
-
-
 class ProcessAPIKey(AbstractAPIKey):
     __tablename__ = "process_api_keys"
     process_name = Column(String, index=True)
@@ -149,6 +147,8 @@ class ProcessAPIKey(AbstractAPIKey):
         super().__init__(key_owner_email, type)
         self.process_name = process_name
         self.environment = environment
+        
+APIKeyPoly = with_polymorphic(AbstractAPIKey, [UserAPIKey, ProcessAPIKey])
 
 class LogEntry(Base):
     __tablename__ = "logs"
