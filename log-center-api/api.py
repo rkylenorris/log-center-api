@@ -6,11 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from .models import LogEntry, AbstractAPIKey, get_db, LogLevel, KeyHolder, KeyType, UserAPIKey, ProcessAPIKey, Environment, AdminApiKey, AdminKeyHolder
+from .models import LogEntry, AbstractAPIKey, get_db, LogLevel, KeyHolder, KeyType, UserAPIKey, ProcessAPIKey, Environment, AdminApiKey, AdminKeyHolder, APIKeyPoly
 
 router = APIRouter()
-
-# TODO: Add with_polymorphic for abstract api key and its subclasses to ensure correct serialization
 
 class LogEntryCreate(BaseModel):
     level: LogLevel
@@ -52,7 +50,7 @@ def verify_admin_key(log_center_admin_api_key: Optional[str] = Header(None, alia
 
 # Dependency to verify API key for user and process API keys
 def verify_api_key(log_center_api_key: Optional[str] = Header(None, alias="log-center-api-key"), db: Session = Depends(get_db)):
-    if not log_center_api_key or not db.query(AbstractAPIKey).filter(AbstractAPIKey.key == log_center_api_key, AbstractAPIKey.active == True).first():
+    if not log_center_api_key or not db.query(APIKeyPoly).filter(APIKeyPoly.key == log_center_api_key, APIKeyPoly.active == True).first():
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
@@ -132,7 +130,7 @@ def deactivate_api_key(
     log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    api_key = db.query(AbstractAPIKey).filter(AbstractAPIKey.key == key).first()
+    api_key = db.query(APIKeyPoly).filter(APIKeyPoly.key == key).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
 
@@ -150,7 +148,7 @@ def deactivate_api_key_by_owner(
     log_center_admin_api_key = Depends(verify_admin_key),
     db: Session = Depends(get_db)
 ):
-    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.owner_email == owner_email, AbstractAPIKey.deactivated_at == None).all()
+    api_keys = db.query(APIKeyPoly).filter(APIKeyPoly.owner_email == owner_email, APIKeyPoly.deactivated_at == None).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found for this owner")
 
@@ -168,7 +166,7 @@ def get_active_api_keys_by_owner(
     db: Session = Depends(get_db),
     log_center_admin_api_key = Depends(verify_admin_key)
 ):    
-    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.owner_email == owner_email, AbstractAPIKey.active == True).all()
+    api_keys = db.query(APIKeyPoly).filter(APIKeyPoly.owner_email == owner_email, APIKeyPoly.active == True).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found for this owner")
     return api_keys
@@ -181,7 +179,7 @@ def get_active_api_keys(
     log_center_admin_api_key = Depends(verify_admin_key)
 ):
     
-    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.active == True).all()
+    api_keys = db.query(APIKeyPoly).filter(APIKeyPoly.active == True).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No active API keys found")
     return api_keys
@@ -193,7 +191,7 @@ def get_deactivated_api_keys(
     log_center_admin_api_key = Depends(verify_admin_key)
 ):
     
-    api_keys = db.query(AbstractAPIKey).filter(AbstractAPIKey.active == False).all()
+    api_keys = db.query(APIKeyPoly).filter(APIKeyPoly.active == False).all()
     if not api_keys:
         raise HTTPException(status_code=404, detail="No deactivated API keys found")
     return api_keys
